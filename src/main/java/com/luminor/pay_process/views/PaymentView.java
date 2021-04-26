@@ -6,6 +6,7 @@ import com.fasterxml.jackson.dataformat.csv.CsvSchema;
 import com.luminor.pay_process.beans.IbanConstraintValidator;
 import com.luminor.pay_process.models.PaymentModel;
 import com.luminor.pay_process.repositories.PaymentRepository;
+import com.luminor.pay_process.services.PaymentService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,6 +26,9 @@ public class PaymentView {
     @Autowired
     private PaymentRepository paymentRepository;
 
+    @Autowired
+    private PaymentService paymentService;
+
     private static final CsvMapper mapper = new CsvMapper();
 
 
@@ -36,13 +40,9 @@ public class PaymentView {
             country = request.getRemoteAddr();
         }
         paymentModel.setCountry(country);
-        PaymentModel savedPayment = paymentRepository.save(paymentModel);
+        PaymentModel savedPayment = paymentService.createPayment(paymentModel);
         return ResponseEntity.status(HttpStatus.CREATED).body(savedPayment);
     }
-
-//    public getIP(){
-//
-//    }
 
     public static <T> List<T> readCSV(Class<T> clazz, InputStream stream) throws IOException {
         CsvSchema schema = mapper.schemaFor(clazz).withHeader().withColumnReordering(true);
@@ -53,52 +53,47 @@ public class PaymentView {
     @PostMapping(value = "/payment-files")
     public ResponseEntity<List<PaymentModel>> bulkSavePayment(HttpServletRequest request, @RequestParam("file") MultipartFile file) {
         String country;
+        List<PaymentModel> finalSavedPaymentList = new java.util.ArrayList<>(List.of());
+
         country = request.getHeader("X-FORWARDED-FOR");
         if (country == null) {
             country = request.getRemoteAddr();
         }
 
-        List<PaymentModel> savedPaymentList = new java.util.ArrayList<>(List.of());
-
-        List<PaymentModel> paymentModels = List.of();
         if(!file.getContentType().equals("text/csv")){
             return ResponseEntity.badRequest().build();
         }
+
         try {
-            paymentModels = readCSV(PaymentModel.class,file.getInputStream());
             AtomicInteger paymentCounter = new AtomicInteger(1);
             IbanConstraintValidator ibanConstraintValidator = new IbanConstraintValidator();
             String finalCountry = country;
-            paymentModels.forEach((paymentModel) -> {
+            List<PaymentModel> finalSavedPaymentList1 = finalSavedPaymentList;
+            readCSV(PaymentModel.class,file.getInputStream()).forEach((paymentModel) -> {
                 if(!ibanConstraintValidator.isIbanValid(paymentModel.getDebtorIban())){
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, String.format("At Row %s Invalid Iban", paymentCounter));
                 }
                 if(paymentModel.getAmount() <1){
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Amount Should be more than 0");
                 }
+
                 paymentModel.setCountry(finalCountry);
-                PaymentModel savedPaymentModel = paymentRepository.save(paymentModel);
-                savedPaymentList.add(savedPaymentModel);
+                finalSavedPaymentList1.add(paymentModel);
                 paymentCounter.getAndIncrement();
             });
+            finalSavedPaymentList = paymentRepository.saveAll(finalSavedPaymentList1);
         } catch (Exception ex) {
             System.out.println("An error occurred while processing the CSV file.");
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Error in Parsing CSV",ex);
 
         }
 
-       return ResponseEntity.ok(savedPaymentList);
+       return ResponseEntity.ok(finalSavedPaymentList);
     }
 
     @GetMapping(value = "/payments")
     public ResponseEntity<List<PaymentModel>> getPayments(@RequestParam(required = false) String debtorIban){
-        List<PaymentModel> paymentModels;
-        if(debtorIban !=null){
-            paymentModels = paymentRepository.findAllByDebtorIban(debtorIban);
-        }
-        else {
-            paymentModels = paymentRepository.findAll();
-        }
+        List<PaymentModel> paymentModels = paymentService.listPayments(debtorIban);
         return ResponseEntity.ok(paymentModels);
     }
 
